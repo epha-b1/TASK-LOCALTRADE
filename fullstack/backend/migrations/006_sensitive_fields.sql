@@ -1,0 +1,4 @@
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS tax_id_enc TEXT,
+  ADD COLUMN IF NOT EXISTS bank_routing_enc TEXT,
+  ADD COLUMN IF NOT EXISTS bank_account_enc TEXT;

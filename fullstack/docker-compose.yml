@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: localtrade
+      POSTGRES_USER: localtrade
+      POSTGRES_PASSWORD: localtrade
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U localtrade -d localtrade"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      API_PORT: 3000
+      DATABASE_URL: postgres://localtrade:localtrade@postgres:5432/localtrade
+      JWT_SECRET: localtrade-dev-jwt-secret
+      SIGNED_URL_SECRET: localtrade-dev-signed-url-secret
+      ENCRYPTION_KEY_HEX: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      MEDIA_ROOT_PATH: /var/localtrade/media
+      CHUNK_ROOT_PATH: /var/localtrade/chunks
+      RATE_LIMIT_PER_MIN: 60
+      NONCE_WINDOW_SEC: 300
+      CORS_ALLOWED_ORIGINS: http://localhost:4200
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - media_data:/var/localtrade/media
+      - chunk_data:/var/localtrade/chunks
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - api
+
+volumes:
+  pg_data:
+  media_data:
+  chunk_data:

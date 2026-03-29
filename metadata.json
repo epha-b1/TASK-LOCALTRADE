@@ -1,0 +1,8 @@
+{
+  "task_id": "TASK-LOCALTRADE",
+  "project_type": "fullstack",
+  "frontend_tech": "angular",
+  "backend_tech": "fastify",
+  "database": "postgresql",
+  "language": "typescript"
+}

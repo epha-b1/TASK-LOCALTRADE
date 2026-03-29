@@ -1,0 +1,114 @@
+<section class="auth-page" *ngIf="isAuthPage()">
+  <router-outlet></router-outlet>
+</section>
+
+<section
+  class="app-shell"
+  *ngIf="!isAuthPage()"
+  [ngClass]="[pageRoleClass(), sidebarCollapsed() ? 'sidebar-collapsed' : '', mobileOpen() ? 'mobile-open' : '']">
+  <aside class="sidebar" [ngClass]="sidebarCollapsed() ? 'collapsed' : ''">
+    <div class="sidebar-top">
+      <button mat-button class="logo-btn" routerLink="/listings/browse" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'LocalTrade' : ''" matTooltipPosition="right">
+        <mat-icon>storefront</mat-icon>
+        <span *ngIf="!sidebarCollapsed()">LocalTrade</span>
+      </button>
+
+      <button
+        mat-icon-button
+        class="collapse-toggle"
+        (click)="toggleSidebarCollapsed()"
+        [matTooltip]="sidebarCollapsed() ? 'Expand sidebar' : 'Collapse sidebar'"
+        matTooltipPosition="right">
+        <mat-icon>{{ sidebarCollapsed() ? 'chevron_right' : 'chevron_left' }}</mat-icon>
+      </button>
+    </div>
+
+    <nav class="sidebar-nav" *ngIf="auth.token()">
+      <div class="nav-group" *ngIf="auth.token()">
+        <p class="group-label" *ngIf="!sidebarCollapsed()">MARKETPLACE</p>
+
+        <a mat-button class="side-nav-item" routerLink="/listings/browse" routerLinkActive="active-link" *ngIf="auth.hasRole('buyer')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Browse Listings' : ''" matTooltipPosition="right"><mat-icon>storefront</mat-icon><span *ngIf="!sidebarCollapsed()">Browse Listings</span></a>
+        <a mat-button class="side-nav-item" routerLink="/orders/list" routerLinkActive="active-link" *ngIf="auth.hasRole('buyer') || auth.hasRole('seller')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'My Orders' : ''" matTooltipPosition="right"><mat-icon>receipt_long</mat-icon><span *ngIf="!sidebarCollapsed()">My Orders</span></a>
+        <a mat-button class="side-nav-item" routerLink="/reviews/list" routerLinkActive="active-link" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Reviews' : ''" matTooltipPosition="right"><mat-icon>rate_review</mat-icon><span *ngIf="!sidebarCollapsed()">Reviews</span></a>
+      </div>
+
+      <div class="nav-group" *ngIf="auth.hasRole('seller') || auth.hasRole('admin')">
+        <p class="group-label" *ngIf="!sidebarCollapsed()">OPERATIONS</p>
+
+        <a mat-button class="side-nav-item" routerLink="/orders/payment-capture" routerLinkActive="active-link" *ngIf="auth.hasRole('seller') || auth.hasRole('admin')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Capture Payment' : ''" matTooltipPosition="right"><mat-icon>payments</mat-icon><span *ngIf="!sidebarCollapsed()">Capture Payment</span></a>
+        <a mat-button class="side-nav-item" routerLink="/upload" routerLinkActive="active-link" *ngIf="auth.hasRole('seller')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Upload Media' : ''" matTooltipPosition="right"><mat-icon>cloud_upload</mat-icon><span *ngIf="!sidebarCollapsed()">Upload Media</span></a>
+        <a mat-button class="side-nav-item" routerLink="/listings/my-listings" routerLinkActive="active-link" *ngIf="auth.hasRole('seller')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'My Listings' : ''" matTooltipPosition="right"><mat-icon>inventory_2</mat-icon><span *ngIf="!sidebarCollapsed()">My Listings</span></a>
+        <a mat-button class="side-nav-item" routerLink="/storefront" routerLinkActive="active-link" *ngIf="auth.hasRole('seller')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'My Storefront' : ''" matTooltipPosition="right"><mat-icon>star_rate</mat-icon><span *ngIf="!sidebarCollapsed()">My Storefront</span></a>
+      </div>
+
+      <div class="nav-group" *ngIf="auth.hasRole('moderator') || auth.hasRole('arbitrator')">
+        <p class="group-label" *ngIf="!sidebarCollapsed()">MODERATION</p>
+
+        <a mat-button class="side-nav-item" routerLink="/moderation/queue" routerLinkActive="active-link" *ngIf="auth.hasRole('moderator')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Moderation Queue' : ''" matTooltipPosition="right"><mat-icon>gavel</mat-icon><span *ngIf="!sidebarCollapsed()">Moderation Queue</span></a>
+        <a mat-button class="side-nav-item" routerLink="/arbitration/queue" routerLinkActive="active-link" *ngIf="auth.hasRole('arbitrator')" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Appeals Queue' : ''" matTooltipPosition="right"><mat-icon>balance</mat-icon><span *ngIf="!sidebarCollapsed()">Appeals Queue</span></a>
+      </div>
+
+      <div class="nav-group" *ngIf="auth.hasRole('admin')">
+        <p class="group-label" *ngIf="!sidebarCollapsed()">ADMIN</p>
+
+        <a mat-button class="side-nav-item" routerLink="/admin/users" routerLinkActive="active-link" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Users' : ''" matTooltipPosition="right"><mat-icon>people</mat-icon><span *ngIf="!sidebarCollapsed()">Users</span></a>
+        <a mat-button class="side-nav-item" routerLink="/admin/keyword-rules" routerLinkActive="active-link" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Keyword Rules' : ''" matTooltipPosition="right"><mat-icon>rule</mat-icon><span *ngIf="!sidebarCollapsed()">Keyword Rules</span></a>
+        <a mat-button class="side-nav-item" routerLink="/admin/refunds" routerLinkActive="active-link" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Refund Approvals' : ''" matTooltipPosition="right"><mat-icon>payments</mat-icon><span *ngIf="!sidebarCollapsed()">Refund Approvals</span></a>
+        <a mat-button class="side-nav-item" routerLink="/admin/audit-logs" routerLinkActive="active-link" (click)="closeMobileSidebar()" [matTooltip]="sidebarCollapsed() ? 'Audit Logs' : ''" matTooltipPosition="right"><mat-icon>history</mat-icon><span *ngIf="!sidebarCollapsed()">Audit Logs</span></a>
+      </div>
+    </nav>
+
+    <div class="sidebar-bottom" *ngIf="auth.token()">
+      <button mat-button class="side-nav-item logout-item" (click)="logout()" [matTooltip]="sidebarCollapsed() ? 'Logout' : ''" matTooltipPosition="right">
+        <mat-icon>logout</mat-icon>
+        <span *ngIf="!sidebarCollapsed()">Logout</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main-shell">
+    <header class="top-header">
+      <div class="header-left">
+        <button mat-icon-button class="mobile-menu-btn" (click)="toggleMobileSidebar()" aria-label="Open sidebar">
+          <mat-icon>menu</mat-icon>
+        </button>
+        <h1>{{ pageTitle() }}</h1>
+      </div>
+
+      <div class="header-right" *ngIf="auth.token(); else guestActions">
+        <button mat-button class="profile-widget" [matMenuTriggerFor]="profileMenu">
+          <span class="profile-avatar">{{ initials() }}</span>
+          <span class="profile-text">
+            <span class="profile-main">{{ currentEmail() || 'Signed in user' }}</span>
+            <span class="profile-sub">{{ primaryRole() }}</span>
+          </span>
+          <mat-icon class="profile-chevron">expand_more</mat-icon>
+        </button>
+      </div>
+
+      <ng-template #guestActions>
+        <div class="header-right">
+          <a mat-button class="auth-nav-btn" routerLink="/auth/register">Register</a>
+          <a mat-flat-button color="primary" class="auth-nav-btn" routerLink="/auth/login">Login</a>
+        </div>
+      </ng-template>
+    </header>
+
+    <main class="content-area page" [ngClass]="pageRoleClass()">
+      <router-outlet></router-outlet>
+    </main>
+  </div>
+
+  <button class="mobile-backdrop" *ngIf="mobileOpen()" (click)="closeMobileSidebar()" aria-label="Close sidebar"></button>
+</section>
+
+<mat-menu #profileMenu="matMenu" xPosition="before">
+  <button mat-menu-item disabled>
+    <mat-icon>account_circle</mat-icon>
+    <span>{{ currentEmail() || 'Signed in user' }}</span>
+  </button>
+  <button mat-menu-item (click)="logout()">
+    <mat-icon>logout</mat-icon>
+    <span>Logout</span>
+  </button>
+</mat-menu>
