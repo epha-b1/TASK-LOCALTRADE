@@ -1,6 +1,6 @@
 {
-  "task_id": "TASK-LOCALTRADE",
-  "project_type": "fullstack",
+  "task_id": "73",
+  "project_type": "repo",
   "frontend_tech": "angular",
   "backend_tech": "fastify",
   "database": "postgresql",
