@@ -45,4 +45,20 @@ describe('AuthService', () => {
     expect(localStorage.getItem('lt_refresh')).toBeNull();
     expect(localStorage.getItem('lt_roles')).toBeNull();
   });
+
+  it('refresh rotates in-memory tokens without localStorage persistence', async () => {
+    const service = TestBed.inject(AuthService);
+    httpPost
+      .mockReturnValueOnce(of({ accessToken: 'token-a', refreshToken: 'refresh-a', roles: ['buyer'] }))
+      .mockReturnValueOnce(of({ accessToken: 'token-b', refreshToken: 'refresh-b' }));
+
+    await service.login('buyer@example.com', 'Password123');
+    const nextToken = await service.refresh();
+
+    expect(nextToken).toBe('token-b');
+    expect(service.token()).toBe('token-b');
+    expect(service.refreshToken()).toBe('refresh-b');
+    expect(localStorage.getItem('lt_token')).toBeNull();
+    expect(localStorage.getItem('lt_refresh')).toBeNull();
+  });
 });

@@ -866,6 +866,76 @@ describe("api integration with postgres", () => {
     expect(attach.statusCode).toBe(200);
   });
 
+  test("buyer review-image upload does not consume seller listing 20-file quota", async () => {
+    const sellerToken = await login("seller@localtrade.test", "seller");
+    const buyerToken = await login("buyer@localtrade.test", "buyer");
+
+    const listing = await app.inject({ method: "POST", url: "/api/listings", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rq-l") }, payload: { title: "Quota isolation", description: "desc", priceCents: 1000, quantity: 3 } });
+    const listingId = listing.json().id as string;
+    const sellerMe = await app.inject({ method: "GET", url: "/api/users/me", headers: { authorization: `Bearer ${sellerToken}` } });
+    const sellerId = sellerMe.json().id as string;
+
+    for (let i = 0; i < 20; i += 1) {
+      await pool.query(
+        "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'jpg', 'image/jpeg', 10, 'ready', '/tmp/fake')",
+        [listingId, sellerId, `quota-${i}.jpg`],
+      );
+    }
+
+    const publish = await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rq-p") } });
+    expect(publish.statusCode).toBe(200);
+
+    const order = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("rq-o") }, payload: { listingId, quantity: 1 } });
+    const orderId = order.json().id as string;
+    await app.inject({ method: "POST", url: "/api/payments/capture", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rq-pay") }, payload: { orderId, tenderType: "cash", amountCents: 1000, transactionKey: "tx-rq-1" } });
+    await app.inject({ method: "POST", url: `/api/orders/${orderId}/complete`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rq-comp") }, payload: { note: "done" } });
+
+    const buyerSession = await app.inject({
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("rq-bs") },
+      payload: { listingId, fileName: "review.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 },
+    });
+    expect(buyerSession.statusCode).toBe(201);
+    expect(buyerSession.json().accepted).toBe(true);
+  });
+
+  test("review create rejects mp4 assets even when listing matches", async () => {
+    const sellerToken = await login("seller@localtrade.test", "seller");
+    const buyerToken = await login("buyer@localtrade.test", "buyer");
+
+    const listing = await app.inject({ method: "POST", url: "/api/listings", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rcm-l") }, payload: { title: "Review mp4 guard", description: "desc", priceCents: 1500, quantity: 2 } });
+    const listingId = listing.json().id as string;
+    const sellerMe = await app.inject({ method: "GET", url: "/api/users/me", headers: { authorization: `Bearer ${sellerToken}` } });
+    const sellerId = sellerMe.json().id as string;
+
+    await pool.query(
+      "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'jpg', 'image/jpeg', 10, 'ready', '/tmp/fake')",
+      [listingId, sellerId, "cover.jpg"],
+    );
+    const mp4Asset = await pool.query(
+      "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'mp4', 'video/mp4', 10, 'ready', '/tmp/fake') RETURNING id",
+      [listingId, sellerId, "review.mp4"],
+    );
+    const mp4AssetId = mp4Asset.rows[0].id as string;
+
+    await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rcm-p") } });
+
+    const order = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("rcm-o") }, payload: { listingId, quantity: 1 } });
+    const orderId = order.json().id as string;
+    await app.inject({ method: "POST", url: "/api/payments/capture", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rcm-pay") }, payload: { orderId, tenderType: "cash", amountCents: 1500, transactionKey: "tx-rcm-1" } });
+    await app.inject({ method: "POST", url: `/api/orders/${orderId}/complete`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rcm-comp") }, payload: { note: "done" } });
+
+    const review = await app.inject({
+      method: "POST",
+      url: "/api/reviews",
+      headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("rcm-r") },
+      payload: { orderId, rating: 5, body: "text", imageAssetIds: [mp4AssetId] },
+    });
+    expect(review.statusCode).toBe(400);
+    expect(review.json().code).toBe("INVALID_REVIEW_IMAGE_TYPE");
+  });
+
   test("public register creates account and rejects duplicate email", async () => {
     const register = await app.inject({
       method: "POST",

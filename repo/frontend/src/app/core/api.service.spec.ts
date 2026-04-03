@@ -39,4 +39,12 @@ describe('ApiService offline cache', () => {
     const offline = await service.get<{ items: Array<{ id: string }> }>('/api/storefront/listings');
     expect(offline.items[0].id).toBe('listing-1');
   });
+
+  it('throws offline network error when no cache exists', async () => {
+    const service = TestBed.inject(ApiService);
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false });
+    httpGet.mockReturnValueOnce(throwError(() => ({ status: 0, error: { message: 'offline' } })));
+
+    await expect(service.get('/api/storefront/sellers/missing/reviews')).rejects.toEqual({ status: 0, error: { message: 'offline' } });
+  });
 });

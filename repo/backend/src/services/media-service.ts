@@ -10,6 +10,7 @@ import { HttpError } from "../utils/http-error.js";
 import { processAssetPostprocessJobs } from "../jobs/worker.js";
 
 const mimeByExt: Record<string, string> = { jpg: "image/jpeg", png: "image/png", mp4: "video/mp4", pdf: "application/pdf" };
+const reviewImageMimeByExt: Record<string, string> = { jpg: "image/jpeg", png: "image/png" };
 
 function sniffMimeFromBuffer(buffer: Buffer): string | null {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
@@ -58,6 +59,13 @@ export const mediaService = {
     const isOwnerSeller = actor.roles.includes("seller") && listing.seller_id === input.sellerId;
     const isEligibleBuyer = actor.roles.includes("buyer") && (await mediaRepository.buyerHasCompletedOrderForListing({ buyerId: actor.id, listingId: input.listingId }));
     if (!isOwnerSeller && !isEligibleBuyer) throw new HttpError(403, "FORBIDDEN", "Forbidden");
+
+    if (!isOwnerSeller && isEligibleBuyer) {
+      const expectedReviewMime = reviewImageMimeByExt[ext];
+      if (!expectedReviewMime || input.mimeType.toLowerCase() !== expectedReviewMime) {
+        throw new HttpError(400, "INVALID_REVIEW_IMAGE_TYPE", "Review attachments must be JPG or PNG images");
+      }
+    }
 
     if (isOwnerSeller) {
       const count = await mediaRepository.countAssetsForListing(input.listingId);
