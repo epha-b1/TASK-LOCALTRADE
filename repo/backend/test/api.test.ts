@@ -966,6 +966,101 @@ describe("api integration with postgres", () => {
     expect(buyerSession.json().accepted).toBe(true);
   });
 
+  test("buyer upload session rejects beyond 5 pending images per listing", async () => {
+    const sellerToken = await login("seller@localtrade.test", "seller");
+    const buyerToken = await login("buyer@localtrade.test", "buyer");
+
+    const listing = await app.inject({ method: "POST", url: "/api/listings", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("bq-l") }, payload: { title: "Buyer quota guard", description: "desc", priceCents: 1000, quantity: 3 } });
+    const listingId = listing.json().id as string;
+    const sellerMe = await app.inject({ method: "GET", url: "/api/users/me", headers: { authorization: `Bearer ${sellerToken}` } });
+    const sellerId = sellerMe.json().id as string;
+
+    await pool.query(
+      "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'jpg', 'image/jpeg', 10, 'ready', '/tmp/fake')",
+      [listingId, sellerId, "cover.jpg"],
+    );
+    await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("bq-p") } });
+
+    const order = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("bq-o") }, payload: { listingId, quantity: 1 } });
+    const orderId = order.json().id as string;
+    await app.inject({ method: "POST", url: "/api/payments/capture", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("bq-pay") }, payload: { orderId, tenderType: "cash", amountCents: 1000, transactionKey: "tx-bq-1" } });
+    await app.inject({ method: "POST", url: `/api/orders/${orderId}/complete`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("bq-comp") }, payload: { note: "done" } });
+
+    const buyerMe = await app.inject({ method: "GET", url: "/api/users/me", headers: { authorization: `Bearer ${buyerToken}` } });
+    const buyerId = buyerMe.json().id as string;
+
+    // 5 unattached buyer assets — should block the 6th
+    for (let i = 0; i < 5; i += 1) {
+      await pool.query(
+        "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'jpg', 'image/jpeg', 10, 'ready', '/tmp/fake')",
+        [listingId, buyerId, `buyer-img-${i}.jpg`],
+      );
+    }
+
+    const sixth = await app.inject({
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("bq-sixth") },
+      payload: { listingId, fileName: "excess.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 },
+    });
+    expect(sixth.statusCode).toBe(409);
+    expect(sixth.json().code).toBe("BUYER_UPLOAD_QUOTA_EXCEEDED");
+  });
+
+  test("buyer can upload for second review on same listing after first review images are attached", async () => {
+    const sellerToken = await login("seller@localtrade.test", "seller");
+    const buyerToken = await login("buyer@localtrade.test", "buyer");
+
+    const listing = await app.inject({ method: "POST", url: "/api/listings", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("mr-l") }, payload: { title: "Multi review listing", description: "desc", priceCents: 800, quantity: 5 } });
+    const listingId = listing.json().id as string;
+    const sellerMe = await app.inject({ method: "GET", url: "/api/users/me", headers: { authorization: `Bearer ${sellerToken}` } });
+    const sellerId = sellerMe.json().id as string;
+    const buyerMe = await app.inject({ method: "GET", url: "/api/users/me", headers: { authorization: `Bearer ${buyerToken}` } });
+    const buyerId = buyerMe.json().id as string;
+
+    await pool.query(
+      "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'jpg', 'image/jpeg', 10, 'ready', '/tmp/fake')",
+      [listingId, sellerId, "cover.jpg"],
+    );
+    await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("mr-p") } });
+
+    // Order 1: place, pay, complete, review with 5 images
+    const order1 = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("mr-o1") }, payload: { listingId, quantity: 1 } });
+    const orderId1 = order1.json().id as string;
+    await app.inject({ method: "POST", url: "/api/payments/capture", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("mr-pay1") }, payload: { orderId: orderId1, tenderType: "cash", amountCents: 800, transactionKey: "tx-mr-1" } });
+    await app.inject({ method: "POST", url: `/api/orders/${orderId1}/complete`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("mr-comp1") }, payload: { note: "done" } });
+
+    // Create 5 buyer assets and attach them to review 1
+    const assetIds1: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const row = await pool.query(
+        "INSERT INTO assets(listing_id, seller_id, file_name, extension, mime_type, size_bytes, status, storage_path) VALUES($1, $2, $3, 'jpg', 'image/jpeg', 10, 'ready', '/tmp/fake') RETURNING id",
+        [listingId, buyerId, `mr-review1-img-${i}.jpg`],
+      );
+      assetIds1.push(row.rows[0].id as string);
+    }
+
+    const review1 = await app.inject({ method: "POST", url: "/api/reviews", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("mr-r1") }, payload: { orderId: orderId1, rating: 5, body: "Great first order", imageAssetIds: assetIds1 } });
+    expect(review1.statusCode).toBe(201);
+
+    // Now, with 5 assets attached to review 1, the pending count is 0 — buyer should be able to upload more
+    // Order 2: place, pay, complete
+    const order2 = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("mr-o2") }, payload: { listingId, quantity: 1 } });
+    const orderId2 = order2.json().id as string;
+    await app.inject({ method: "POST", url: "/api/payments/capture", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("mr-pay2") }, payload: { orderId: orderId2, tenderType: "cash", amountCents: 800, transactionKey: "tx-mr-2" } });
+    await app.inject({ method: "POST", url: `/api/orders/${orderId2}/complete`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("mr-comp2") }, payload: { note: "done" } });
+
+    // Buyer can now create a new upload session for review 2 images
+    const session2 = await app.inject({
+      method: "POST",
+      url: "/api/media/upload-sessions",
+      headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("mr-bs2") },
+      payload: { listingId, fileName: "review2.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 },
+    });
+    expect(session2.statusCode).toBe(201);
+    expect(session2.json().accepted).toBe(true);
+  });
+
   test("review create rejects mp4 assets even when listing matches", async () => {
     const sellerToken = await login("seller@localtrade.test", "seller");
     const buyerToken = await login("buyer@localtrade.test", "buyer");

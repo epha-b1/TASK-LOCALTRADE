@@ -109,13 +109,14 @@ export const mediaRepository = {
        WHERE j.id = (
          SELECT id FROM jobs
          WHERE type = 'asset_postprocess' AND status = 'queued'
+           AND available_at <= NOW()
          ORDER BY created_at ASC
          FOR UPDATE SKIP LOCKED
          LIMIT 1
        )
-       RETURNING j.id, j.payload_json`,
+       RETURNING j.id, j.payload_json, j.retry_count`,
     );
-    return result.rows[0] as { id: string; payload_json: Record<string, any> } | undefined;
+    return result.rows[0] as { id: string; payload_json: Record<string, any>; retry_count: number } | undefined;
   },
 
   async completeJob(jobId: string) {
@@ -124,6 +125,20 @@ export const mediaRepository = {
 
   async failJob(jobId: string, message: string) {
     await pool.query("UPDATE jobs SET status = 'failed', locked_at = NULL, last_error = $2, updated_at = NOW() WHERE id = $1", [jobId, message]);
+  },
+
+  async requeueJob(jobId: string, errorMessage: string, delayMs: number) {
+    await pool.query(
+      `UPDATE jobs
+       SET status = 'queued',
+           retry_count = retry_count + 1,
+           locked_at = NULL,
+           last_error = $2,
+           available_at = NOW() + ($3 || ' milliseconds')::interval,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [jobId, errorMessage, delayMs],
+    );
   },
 
   async listAssetStatusesForListing(listingId: string) {
@@ -147,5 +162,27 @@ export const mediaRepository = {
       [input.buyerId, input.listingId],
     );
     return Boolean(result.rowCount);
+  },
+
+  async countBuyerPendingAssetsForListing(buyerId: string, listingId: string) {
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM assets a
+       WHERE a.seller_id = $1 AND a.listing_id = $2
+         AND NOT EXISTS (SELECT 1 FROM review_media rm WHERE rm.asset_id = a.id)`,
+      [buyerId, listingId],
+    );
+    return Number(result.rows[0].c);
+  },
+
+  async deleteStaleUnattachedBuyerAssets(maxAgeMs: number) {
+    const result = await pool.query(
+      `DELETE FROM assets a
+       WHERE a.created_at < NOW() - ($1 || ' milliseconds')::interval
+         AND a.seller_id != (SELECT l.seller_id FROM listings l WHERE l.id = a.listing_id)
+         AND NOT EXISTS (SELECT 1 FROM review_media rm WHERE rm.asset_id = a.id)
+       RETURNING a.id, a.storage_path`,
+      [maxAgeMs],
+    );
+    return result.rows as Array<{ id: string; storage_path: string | null }>;
   },
 };

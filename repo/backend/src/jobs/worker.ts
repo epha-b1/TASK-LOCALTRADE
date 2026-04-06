@@ -6,8 +6,10 @@ import { mkdir, readdir, rename, stat, unlink, writeFile } from "node:fs/promise
 import path from "node:path";
 import sharp from "sharp";
 import { config } from "../config.js";
+import { MAX_JOB_RETRIES, JOB_RETRY_DELAY_MS } from "../domain.js";
 import { adminRepository } from "../repositories/admin-repository.js";
 import { mediaRepository } from "../repositories/media-repository.js";
+import { fileStorage } from "../storage/file-storage.js";
 
 const execFileAsync = promisify(execFile);
 const BACKUP_RETENTION_DAYS = 30;
@@ -32,11 +34,12 @@ function encryptBuffer(value: Buffer) {
 export async function recoverStaleJobs() {
   await pool.query(
     `UPDATE jobs
-     SET status = CASE WHEN retry_count + 1 >= 3 THEN 'failed' ELSE 'queued' END,
+     SET status = CASE WHEN retry_count + 1 >= $1 THEN 'failed' ELSE 'queued' END,
          retry_count = retry_count + 1,
          locked_at = NULL,
          updated_at = NOW()
      WHERE status = 'processing' AND locked_at < NOW() - INTERVAL '10 minutes'`,
+    [MAX_JOB_RETRIES],
   );
 }
 
@@ -170,10 +173,16 @@ export async function processAssetPostprocessJobs(limit = 20) {
       await mediaRepository.completeJob(job.id);
     } catch (error) {
       const assetId = String(job.payload_json.assetId ?? "");
-      if (assetId) {
-        await mediaRepository.markAssetFailed(assetId);
+      const errorMsg = error instanceof Error ? error.message : "asset postprocess failed";
+      const nextAttempt = job.retry_count + 1;
+      if (nextAttempt < MAX_JOB_RETRIES) {
+        await mediaRepository.requeueJob(job.id, errorMsg, JOB_RETRY_DELAY_MS);
+      } else {
+        if (assetId) {
+          await mediaRepository.markAssetFailed(assetId);
+        }
+        await mediaRepository.failJob(job.id, errorMsg);
       }
-      await mediaRepository.failJob(job.id, error instanceof Error ? error.message : "asset postprocess failed");
     }
   }
 }
@@ -201,11 +210,24 @@ export function startAssetPostprocessScheduler() {
   assetWorkerTimer.unref?.();
 }
 
+export const STALE_BUYER_ASSET_AGE_MS = 24 * 60 * 60 * 1000;
+
+export async function cleanupStaleBuyerAssets() {
+  const stale = await mediaRepository.deleteStaleUnattachedBuyerAssets(STALE_BUYER_ASSET_AGE_MS);
+  for (const asset of stale) {
+    if (asset.storage_path) {
+      await fileStorage.removeFile(asset.storage_path);
+    }
+  }
+  return stale.length;
+}
+
 async function runStaleRecoveryTick() {
   if (staleRecoveryRunning) return;
   staleRecoveryRunning = true;
   try {
     await recoverStaleJobs();
+    await cleanupStaleBuyerAssets();
   } finally {
     staleRecoveryRunning = false;
   }

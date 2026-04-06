@@ -2,6 +2,9 @@ export const ALLOWED_EXTENSIONS = new Set(["jpg", "png", "mp4", "pdf"]);
 export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024;
 export const MAX_FILES_PER_LISTING = 20;
 export const CHUNK_SIZE = 5 * 1024 * 1024;
+export const MAX_JOB_RETRIES = 3;
+export const MAX_REVIEW_IMAGES = 5;
+export const JOB_RETRY_DELAY_MS = 5_000;
 
 export function refundRequiresAdmin(amountCents: number): boolean {
   return amountCents > 25000;

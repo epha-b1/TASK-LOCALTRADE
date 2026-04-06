@@ -1,5 +1,5 @@
 import { config } from "../config.js";
-import { ALLOWED_EXTENSIONS, CHUNK_SIZE, MAX_FILES_PER_LISTING, MAX_FILE_SIZE } from "../domain.js";
+import { ALLOWED_EXTENSIONS, CHUNK_SIZE, MAX_FILES_PER_LISTING, MAX_FILE_SIZE, MAX_REVIEW_IMAGES } from "../domain.js";
 import { auditRepository } from "../repositories/audit-repository.js";
 import { listingRepository } from "../repositories/listing-repository.js";
 import { mediaRepository } from "../repositories/media-repository.js";
@@ -64,6 +64,10 @@ export const mediaService = {
       const expectedReviewMime = reviewImageMimeByExt[ext];
       if (!expectedReviewMime || input.mimeType.toLowerCase() !== expectedReviewMime) {
         throw new HttpError(400, "INVALID_REVIEW_IMAGE_TYPE", "Review attachments must be JPG or PNG images");
+      }
+      const pendingCount = await mediaRepository.countBuyerPendingAssetsForListing(actor.id, input.listingId);
+      if (pendingCount >= MAX_REVIEW_IMAGES) {
+        throw new HttpError(409, "BUYER_UPLOAD_QUOTA_EXCEEDED", `Buyer may have at most ${MAX_REVIEW_IMAGES} pending review images per listing`);
       }
     }
 

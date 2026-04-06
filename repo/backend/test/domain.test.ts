@@ -6,6 +6,9 @@ import {
   normalizeRulePattern,
   refundRequiresAdmin,
   reviewWindowOpen,
+  MAX_JOB_RETRIES,
+  MAX_REVIEW_IMAGES,
+  JOB_RETRY_DELAY_MS,
 } from "../src/domain.js";
 
 describe("domain invariants", () => {
@@ -53,5 +56,17 @@ describe("domain invariants", () => {
     expect(metrics.avgRating90d).toBe(4.5);
     expect(metrics.positiveRate90d).toBe(100);
     expect(metrics.reviewCount90d).toBe(2);
+  });
+
+  test("MAX_JOB_RETRIES is 3 total attempts", () => {
+    expect(MAX_JOB_RETRIES).toBe(3);
+  });
+
+  test("MAX_REVIEW_IMAGES limits buyer uploads to 5", () => {
+    expect(MAX_REVIEW_IMAGES).toBe(5);
+  });
+
+  test("JOB_RETRY_DELAY_MS provides retry backoff", () => {
+    expect(JOB_RETRY_DELAY_MS).toBeGreaterThan(0);
   });
 });
