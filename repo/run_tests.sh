@@ -2,33 +2,47 @@
 # Strict Docker-only test runner.
 # Runs backend unit + API integration, frontend unit + build, and FE↔BE E2E
 # entirely inside docker-compose. No host-side Node, npm, or psql is used.
+#
+# Uses high, isolated host ports by default so this script can run on a
+# machine that already has containers on 3000 / 4200 / 5432. Override any of
+# the three if you need different values.
 
 set -euo pipefail
 
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-localtrade}"
-export COMPOSE_PROJECT_NAME
+POSTGRES_PORT="${POSTGRES_PORT:-55432}"
+API_PORT="${API_PORT:-33000}"
+FRONTEND_PORT="${FRONTEND_PORT:-44200}"
+export COMPOSE_PROJECT_NAME POSTGRES_PORT API_PORT FRONTEND_PORT
+
+# Prefer the modern `docker compose` (v2+); fall back to legacy `docker-compose`.
+if docker compose version >/dev/null 2>&1; then
+  DC=(docker compose)
+else
+  DC=(docker-compose)
+fi
 
 cleanup() {
   echo
   echo "Stopping stack..."
-  docker-compose -p "$COMPOSE_PROJECT_NAME" --profile test down --remove-orphans >/dev/null 2>&1 || true
+  "${DC[@]}" -p "$COMPOSE_PROJECT_NAME" --profile test down --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-echo "===> Starting stack (postgres + api + frontend)..."
-docker-compose -p "$COMPOSE_PROJECT_NAME" up -d postgres api frontend
+echo "===> Starting stack (postgres + api + frontend) on ports pg=$POSTGRES_PORT api=$API_PORT fe=$FRONTEND_PORT..."
+"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" up -d postgres api frontend
 
 echo
 echo "===> Backend unit + API integration tests (Docker)..."
-docker-compose -p "$COMPOSE_PROJECT_NAME" --profile test run --rm backend-tests
+"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" --profile test run --rm backend-tests
 
 echo
 echo "===> Frontend unit tests + production build (Docker)..."
-docker-compose -p "$COMPOSE_PROJECT_NAME" --profile test run --rm frontend-tests
+"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" --profile test run --rm frontend-tests
 
 echo
 echo "===> FE↔BE E2E (Docker, real proxy round-trip)..."
-docker-compose -p "$COMPOSE_PROJECT_NAME" --profile test run --rm e2e
+"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" --profile test run --rm e2e
 
 echo
 echo "All test suites passed."

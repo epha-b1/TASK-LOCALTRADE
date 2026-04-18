@@ -201,7 +201,7 @@ Node, no host `psql`.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `docker-compose up` reports `port is already allocated` on 3000/4200 | another local service holds the port | stop the other service or remap the host port in `docker-compose.yml` |
+| `docker-compose up` reports `port is already allocated` on 3000/4200/5432 | another local service holds the port | remap with env vars, e.g. `POSTGRES_PORT=55432 API_PORT=33000 FRONTEND_PORT=44200 docker-compose up` (all three are overridable — see `docker-compose.yml`). `bash run_tests.sh` already sets these high ports by default. |
 | API logs `pool: cannot connect` on boot | Postgres is still initializing | compose waits for `pg_isready` via the healthcheck; if you bypassed it, re-run `docker-compose up` |
 | Frontend shows CORS errors | `CORS_ALLOWED_ORIGINS` doesn't include the origin you're hitting | set `CORS_ALLOWED_ORIGINS=http://localhost:4200` (or your LAN IP) in compose env and restart the api |
 | Integration tests fail with `relation ... does not exist` | DB volume was wiped between runs | `docker-compose --profile test run --rm backend-tests` — it re-migrates and re-seeds before testing |

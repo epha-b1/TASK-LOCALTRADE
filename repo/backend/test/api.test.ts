@@ -2462,8 +2462,19 @@ describe("api integration with postgres", () => {
     const listingId = listing.json().id as string;
     const session = await app.inject({ method: "POST", url: "/api/media/upload-sessions", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("ak-s") }, payload: { listingId, fileName: "x.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 } });
     const sid = session.json().sessionId as string;
+    const assetId = session.json().assetId as string;
     await app.inject({ method: "PUT", url: `/api/media/upload-sessions/${sid}/chunks/0`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("ak-c"), "content-type": "application/octet-stream" }, payload: Buffer.from("abc") });
     await app.inject({ method: "POST", url: `/api/media/upload-sessions/${sid}/finalize`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("ak-f") }, payload: { detectedMime: "image/jpeg" } });
+    // Wait for the worker to finish postprocessing before publishing so this
+    // deterministically exercises the publish-audit path even under slower
+    // container scheduling.
+    let assetStatus = "processing";
+    for (let i = 0; i < 60 && assetStatus !== "ready"; i += 1) {
+      const row = await pool.query("SELECT status FROM assets WHERE id = $1", [assetId]);
+      assetStatus = String(row.rows[0]?.status ?? "processing");
+      if (assetStatus !== "ready") await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(assetStatus).toBe("ready");
     await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("ak-p") } });
 
     const order = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerToken}`, ...replayHeaders("ak-o") }, payload: { listingId, quantity: 1 } });

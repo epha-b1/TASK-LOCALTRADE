@@ -1,13 +1,26 @@
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 WORKDIR /app
-RUN apk add --no-cache ffmpeg postgresql-client
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg postgresql-client \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json tsconfig.json vitest.config.ts ./
-RUN npm config set fetch-retries 5 \
- && npm config set fetch-retry-mintimeout 20000 \
- && npm config set fetch-retry-maxtimeout 120000 \
- && (npm ci --no-audit --no-fund --loglevel=error \
-     || npm ci --no-audit --no-fund --loglevel=error \
-     || npm install --no-audit --no-fund --loglevel=error)
+RUN set -eu; \
+    npm config set fetch-retries 5; \
+    npm config set fetch-retry-mintimeout 20000; \
+    npm config set fetch-retry-maxtimeout 120000; \
+    for i in 1 2 3; do \
+      rm -rf node_modules; \
+      npm ci --no-audit --no-fund --include=dev --loglevel=error || true; \
+      if [ -x node_modules/.bin/vitest ] && [ -x node_modules/.bin/tsx ]; then \
+        echo "npm ci succeeded (vitest+tsx present on attempt $i)"; break; \
+      fi; \
+      echo "attempt $i did not install devDependencies; retrying"; \
+      sleep 5; \
+    done; \
+    test -x node_modules/.bin/vitest; \
+    test -x node_modules/.bin/tsx
+
 COPY migrations ./migrations
 COPY src ./src
 COPY test ./test
