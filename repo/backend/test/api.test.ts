@@ -1,5 +1,5 @@
-import { afterAll, beforeEach, describe, expect, test } from "vitest";
-import { createServer } from "node:http";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { SignJWT } from "jose";
 import { buildServer } from "../src/server.js";
 import { config } from "../src/config.js";
@@ -9,6 +9,13 @@ import { closeDb, resetDb } from "./test-db.js";
 
 const app = buildServer();
 
+// Real port-level HTTP: spin up the server on an ephemeral port and route
+// every app.inject(...) call through an actual TCP/HTTP round trip using
+// node's fetch. Public contract of the wrapper (statusCode/headers/body/
+// json()/rawPayload) matches Fastify's app.inject result shape so the 94
+// existing tests do not need to be rewritten.
+let serverOrigin = "";
+
 function replayHeaders(seed: string) {
   return {
     "x-request-nonce": `nonce-${seed}-${Date.now()}-${Math.random()}`,
@@ -16,20 +23,85 @@ function replayHeaders(seed: string) {
   };
 }
 
-const rawInject = app.inject.bind(app);
-(app as any).inject = (opts: any) => {
-  if (opts && typeof opts === "object" && !Array.isArray(opts)) {
-    const headers = { ...(opts.headers ?? {}) } as Record<string, string>;
-    const hasAuth = Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
-    const hasNonce = Object.keys(headers).some((key) => key.toLowerCase() === "x-request-nonce");
-    const hasTimestamp = Object.keys(headers).some((key) => key.toLowerCase() === "x-request-timestamp");
-    if (hasAuth && (!hasNonce || !hasTimestamp)) {
-      Object.assign(headers, replayHeaders("auto"));
-      return rawInject({ ...opts, headers });
+type InjectOpts = {
+  method?: string;
+  url?: string;
+  path?: string;
+  headers?: Record<string, string | number | string[] | undefined>;
+  payload?: unknown;
+  body?: unknown;
+};
+
+type InjectResult = {
+  statusCode: number;
+  headers: Record<string, string>;
+  rawPayload: Buffer;
+  body: string;
+  payload: string;
+  json: <T = any>() => T;
+};
+
+function normalizeHeaders(input: Record<string, string | number | string[] | undefined> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!input) return out;
+  for (const [k, v] of Object.entries(input)) {
+    if (v === undefined) continue;
+    if (Array.isArray(v)) {
+      out[k] = v.join(", ");
+    } else {
+      out[k] = String(v);
     }
   }
-  return rawInject(opts as any);
-};
+  return out;
+}
+
+async function realHttpInject(opts: InjectOpts | string): Promise<InjectResult> {
+  if (typeof opts === "string") {
+    opts = { method: "GET", url: opts } as InjectOpts;
+  }
+  const method = (opts.method ?? "GET").toUpperCase();
+  const rawUrlOrPath = (opts.url ?? opts.path ?? "/") as string;
+  // allow full URL or path
+  const url = /^https?:\/\//.test(rawUrlOrPath) ? rawUrlOrPath : `${serverOrigin}${rawUrlOrPath}`;
+  const headers = normalizeHeaders(opts.headers);
+  const hasAuth = Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
+  const hasNonce = Object.keys(headers).some((key) => key.toLowerCase() === "x-request-nonce");
+  const hasTimestamp = Object.keys(headers).some((key) => key.toLowerCase() === "x-request-timestamp");
+  if (hasAuth && (!hasNonce || !hasTimestamp)) {
+    Object.assign(headers, replayHeaders("auto"));
+  }
+
+  let body: BodyInit | undefined;
+  const payload = (opts as InjectOpts).payload ?? (opts as InjectOpts).body;
+  if (payload !== undefined && method !== "GET" && method !== "HEAD") {
+    if (Buffer.isBuffer(payload)) {
+      body = payload as unknown as BodyInit;
+    } else if (typeof payload === "string") {
+      body = payload;
+    } else {
+      body = JSON.stringify(payload);
+      if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+        headers["content-type"] = "application/json";
+      }
+    }
+  }
+
+  const res = await fetch(url, { method, headers, body, redirect: "manual" });
+  const rawPayload = Buffer.from(await res.arrayBuffer());
+  const bodyText = rawPayload.toString("utf8");
+  const respHeaders: Record<string, string> = {};
+  res.headers.forEach((v, k) => { respHeaders[k] = v; });
+  return {
+    statusCode: res.status,
+    headers: respHeaders,
+    rawPayload,
+    body: bodyText,
+    payload: bodyText,
+    json: <T,>(): T => JSON.parse(bodyText) as T,
+  };
+}
+
+(app as any).inject = (opts: any) => realHttpInject(opts as InjectOpts);
 
 async function login(email: string, password: string) {
   const response = await app.inject({
@@ -43,6 +115,12 @@ async function login(email: string, password: string) {
 }
 
 describe("api integration with postgres", () => {
+  beforeAll(async () => {
+    // Real port-level listener (no app.inject bypass).
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    serverOrigin = address;
+  });
+
   beforeEach(async () => {
     await resetDb();
   });
@@ -671,9 +749,9 @@ describe("api integration with postgres", () => {
     const sellerToken = await login("seller@localtrade.test", "seller");
 
     const webhookReceipt = new Promise<{ headers: Record<string, string | string[] | undefined>; body: string }>((resolve) => {
-      const server = createServer((req, res) => {
+      const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         const chunks: Buffer[] = [];
-        req.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        req.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
         req.on("end", () => {
           const payload = Buffer.concat(chunks).toString("utf8");
           res.statusCode = 200;
@@ -2653,8 +2731,10 @@ describe("api integration with postgres", () => {
     expect(ownView.statusCode).toBe(200);
     const body = ownView.json();
     expect(body.id).toBe(listingId);
-    expect(body.ready).toBeDefined();
-    expect(body.reason).toBeDefined();
+    expect(body.status).toBe("draft");
+    expect(body.readyToPublish).toBe(false);
+    expect(body.blockedReason).toBe("NO_ASSETS");
+    expect(Array.isArray(body.assets)).toBe(true);
 
     const buyerForbidden = await app.inject({ method: "GET", url: `/api/listings/${listingId}`, headers: { authorization: `Bearer ${buyerToken}` } });
     expect(buyerForbidden.statusCode).toBe(403);
@@ -2999,5 +3079,128 @@ describe("api integration with postgres", () => {
     expect(downloaded.statusCode).toBe(200);
     expect(downloaded.headers["content-type"]).toBe("image/jpeg");
     expect(downloaded.rawPayload.length).toBeGreaterThan(0);
+  });
+
+  test("GET /api/admin/content-rules lists existing rules for admin and 403 for seller", async () => {
+    const adminToken = await login("admin@localtrade.test", "admin");
+    const sellerToken = await login("seller@localtrade.test", "seller");
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/content-rules",
+      headers: { authorization: `Bearer ${adminToken}`, ...replayHeaders("cr-list-c") },
+      payload: { ruleType: "keyword", pattern: "inventory-only-term", active: true },
+    });
+    expect(created.statusCode).toBe(201);
+    const createdId = created.json().id as string;
+
+    // Explicit literal-path GET — the endpoint under test.
+    const listing = await app.inject({
+      method: "GET",
+      url: "/api/admin/content-rules",
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(listing.statusCode).toBe(200);
+    const items = listing.json().items as Array<{ id: string; pattern: string; active: boolean }>;
+    expect(Array.isArray(items)).toBe(true);
+    const found = items.find((r) => r.id === createdId);
+    expect(found).toBeDefined();
+    expect(found!.active).toBe(true);
+
+    // Negative path: non-admin forbidden.
+    const sellerAttempt = await app.inject({
+      method: "GET",
+      url: "/api/admin/content-rules",
+      headers: { authorization: `Bearer ${sellerToken}` },
+    });
+    expect(sellerAttempt.statusCode).toBe(403);
+
+    // Negative path: unauthenticated.
+    const noAuth = await app.inject({ method: "GET", url: "/api/admin/content-rules" });
+    expect(noAuth.statusCode).toBe(401);
+  });
+
+  test("PATCH /api/admin/webhooks/subscriptions/:id toggles active and rotates secret, 404 on missing", async () => {
+    const adminToken = await login("admin@localtrade.test", "admin");
+    const sellerToken = await login("seller@localtrade.test", "seller");
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/admin/webhooks/subscriptions",
+      headers: { authorization: `Bearer ${adminToken}`, ...replayHeaders("wh-patch-c") },
+      payload: { eventType: "order.completed", targetUrl: "http://127.0.0.1/wh-patch", secret: "originalSecret123" },
+    });
+    expect(created.statusCode).toBe(201);
+    const subscriptionId = created.json().id as string;
+
+    // Negative path: non-admin cannot PATCH.
+    const forbidden = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/webhooks/subscriptions/${subscriptionId}`,
+      headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("wh-patch-forb") },
+      payload: { active: false },
+    });
+    expect(forbidden.statusCode).toBe(403);
+
+    // Happy path: admin toggles active + rotates secret.
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/api/admin/webhooks/subscriptions/${subscriptionId}`,
+      headers: { authorization: `Bearer ${adminToken}`, ...replayHeaders("wh-patch-ok") },
+      payload: { active: false, secret: "rotatedSecret456" },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json().id).toBe(subscriptionId);
+    expect(patched.json().active).toBe(false);
+
+    // Side-effect verification: DB row updated and secret ciphertext rotated.
+    const row = await pool.query(
+      "SELECT active, secret_enc FROM webhook_subscriptions WHERE id = $1",
+      [subscriptionId],
+    );
+    expect(row.rows[0].active).toBe(false);
+    const decryptedSecret = decryptText(row.rows[0].secret_enc as string);
+    expect(decryptedSecret).toBe("rotatedSecret456");
+
+    // Negative path: 404 on non-existent subscription id.
+    const missing = await app.inject({
+      method: "PATCH",
+      url: "/api/admin/webhooks/subscriptions/00000000-0000-0000-0000-000000000000",
+      headers: { authorization: `Bearer ${adminToken}`, ...replayHeaders("wh-patch-404") },
+      payload: { active: true },
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().code).toBe("SUBSCRIPTION_NOT_FOUND");
+  });
+
+  test("GET /download/:assetId accepts literal path with valid signature and rejects unsigned request", async () => {
+    const sellerToken = await login("seller@localtrade.test", "seller");
+    const listing = await app.inject({ method: "POST", url: "/api/listings", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("dllit-l") }, payload: { title: "Literal download", description: "desc", priceCents: 500, quantity: 1 } });
+    const listingId = listing.json().id as string;
+    const session = await app.inject({ method: "POST", url: "/api/media/upload-sessions", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("dllit-s") }, payload: { listingId, fileName: "dllit.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 } });
+    const sid = session.json().sessionId as string;
+    const assetId = session.json().assetId as string;
+    const chunkBody = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+    await app.inject({ method: "PUT", url: `/api/media/upload-sessions/${sid}/chunks/0`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("dllit-c"), "content-type": "application/octet-stream" }, payload: chunkBody });
+    await app.inject({ method: "POST", url: `/api/media/upload-sessions/${sid}/finalize`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("dllit-f") }, payload: { detectedMime: "image/jpeg" } });
+    const signed = await app.inject({ method: "GET", url: `/api/media/assets/${assetId}/signed-url`, headers: { authorization: `Bearer ${sellerToken}` } });
+    const { url: signedUrl } = signed.json() as { url: string };
+    const queryString = signedUrl.substring(signedUrl.indexOf("?"));
+
+    // Explicit literal-path request — the endpoint under test.
+    const downloaded = await app.inject({
+      method: "GET",
+      url: `/download/${assetId}${queryString}`,
+    });
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.headers["content-type"]).toBe("image/jpeg");
+    expect(downloaded.rawPayload.length).toBeGreaterThan(0);
+
+    // Negative path: literal path without signature must be rejected.
+    const unsigned = await app.inject({
+      method: "GET",
+      url: `/download/${assetId}`,
+    });
+    expect(unsigned.statusCode).toBe(400);
   });
 });

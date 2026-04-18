@@ -2,27 +2,29 @@
 
 **Project type:** fullstack
 
-An offline-first, on-prem, role-based local marketplace. Ships as a
-`docker-compose` stack containing a PostgreSQL database, a Fastify backend
-API, and an Angular web frontend. No external cloud services are required to
-run or verify the product.
+Offline-first, on-prem, role-based local marketplace. The entire runtime —
+database, backend API, and Angular web frontend — runs inside Docker.
+No host-side language runtime, package install, or database client is
+required to run, verify, or test the project.
 
 ---
 
-## Quick start
-
-The entire stack is containerized — no host-side setup is required.
+## Start the stack
 
 ```bash
 docker-compose up
 ```
 
-Equivalent modern command (both work): `docker compose up`. Use `docker-compose up -d` to run detached, and `docker-compose down` to stop.
+Detached / teardown variants (optional, same command family):
 
-The `-p localtrade73` project flag is only needed when you want to run tests
-against a dedicated database instance (see the [Testing](#testing) section).
+```bash
+docker-compose up -d        # run in background
+docker-compose down         # stop and remove containers
+```
 
-### Access (ports and URLs)
+---
+
+## Access
 
 Once the stack is up:
 
@@ -34,12 +36,12 @@ Once the stack is up:
 | Liveness probe | http://localhost:3000/health/live |
 | Readiness probe (checks DB) | http://localhost:3000/health/ready |
 
-PostgreSQL listens on the container network as `postgres:5432`. It is **not**
-exposed to the host by the default `docker-compose up` (only
-`docker-compose -p localtrade73` with `POSTGRES_PORT=55432` exposes it, for
-tests).
+PostgreSQL is on the compose network only (`postgres:5432`) and is **not**
+exposed to the host by default.
 
-### Demo credentials
+---
+
+## Demo credentials
 
 Authentication is required for all role-based flows. Use these seed accounts:
 
@@ -51,118 +53,96 @@ Authentication is required for all role-based flows. Use these seed accounts:
 | Arbitrator | `arbitrator@localtrade.test` | `arbitrator` |
 | Admin | `admin@localtrade.test` | `admin` |
 
-Public storefront, review detail, registration, login, and the signed
-download URL do not require authentication.
+Public endpoints (storefront listings, review detail, registration, login,
+signed download URL) do not require authentication.
 
 ---
 
 ## Verification
 
-### 1. API smoke check
+### 1. Quick API smoke (from any host with docker-compose up running)
+
+Use the containerized shell — no host `curl`/`jq` assumed:
 
 ```bash
-# Readiness (DB-reachable)
-curl -s http://localhost:3000/health/ready
+docker-compose exec api sh -c \
+  'wget -q -O- http://localhost:3000/health/ready'
 # → {"ok":true}
-
-# Log in as seller, capture JWT
-TOKEN=$(curl -s -H 'Content-Type: application/json' \
-  -H "X-Request-Nonce: smoke-$RANDOM" \
-  -H "X-Request-Timestamp: $(date +%s)" \
-  -d '{"email":"seller@localtrade.test","password":"seller"}' \
-  http://localhost:3000/api/auth/login | jq -r .accessToken)
-
-# List own listings
-curl -s -H "Authorization: Bearer $TOKEN" \
-  http://localhost:3000/api/listings | jq .
-
-# Public storefront
-curl -s http://localhost:3000/api/storefront/listings | jq .
 ```
 
-### 2. Web/UI flow (end-to-end)
+Log in as seller and list own listings (all through the API container):
+
+```bash
+docker-compose exec api sh -c '
+  TS=$(date +%s) &&
+  wget -q --header "Content-Type: application/json" \
+       --header "X-Request-Nonce: readme-$RANDOM" \
+       --header "X-Request-Timestamp: $TS" \
+       --post-data={\"email\":\"seller@localtrade.test\",\"password\":\"seller\"} \
+       -O- http://localhost:3000/api/auth/login'
+```
+
+### 2. End-to-end Web/UI flow
 
 1. Open http://localhost:4200.
 2. Log in as **seller** (`seller@localtrade.test` / `seller`).
-3. **My Listings → New listing.** Fill in title, description, price, quantity.
-4. **Upload.** Drag one or more files (JPG/PNG/MP4/PDF, ≤ 2 GB each,
-   20 files per listing max). Wait for each upload's status to reach `ready`.
+3. **My Listings → New listing.** Fill title, description, price, quantity.
+4. **Upload.** Drag JPG/PNG/MP4/PDF files (≤ 2 GB each, ≤ 20 per listing).
+   Wait for each upload's status to reach `ready`.
 5. **Publish** the listing.
-6. Log out and log back in as **buyer** (`buyer@localtrade.test` / `buyer`).
+6. Log out. Log back in as **buyer** (`buyer@localtrade.test` / `buyer`).
 7. **Browse Listings → View & Order.** Pick a quantity, place the order.
 8. **My Orders** should show the order with correct totals.
 
-### 3. Automated verification
+### 3. Automated verification (see [Testing](#testing))
 
-See [Testing](#testing).
+```bash
+# Brings up the stack and runs all test suites inside containers.
+bash run_tests.sh
+```
 
 ---
 
 ## Testing
 
-The project runs three independent suites. The first two (backend unit +
-frontend) require **no database**. The third (backend API integration) uses
-a dockerized Postgres on a non-default host port so it does not collide with
-any other local stack.
+All test suites run **inside Docker** via the `test` compose profile — no
+host-side `npm install`, `node`, or `psql` is needed.
 
-### Backend unit / security / worker tests (no DB required)
-
-```bash
-npm --prefix backend install
-npm --prefix backend test -- test/domain.test.ts test/security.test.ts test/security-hardening.test.ts test/worker.test.ts
-```
-
-Validates: domain invariants (refund threshold, review window, publish gate,
-credit metrics), signed-URL HMAC, token handling, worker retry lifecycle, and
-stale-job recovery.
-
-### Frontend unit tests and production build
-
-```bash
-npm --prefix frontend install
-npm --prefix frontend test -- --watch=false
-npm --prefix frontend run build
-```
-
-Validates: auth guard, auth/api services, role-based routing, upload
-component state/validation, admin/storefront/reviews components, and that the
-production bundle builds successfully.
-
-### Backend API integration tests (DB-backed, no mocks)
-
-This suite bootstraps the real Fastify server via `buildServer()` and
-exercises every endpoint through `app.inject` (true HTTP path, no service
-mocks). It requires a running Postgres.
-
-```bash
-# 1) Start an isolated Postgres on host port 55432.
-POSTGRES_PORT=55432 docker-compose -p localtrade73 up -d postgres
-
-# 2) Apply schema migrations and seed demo data.
-DATABASE_URL=postgres://localtrade:localtrade@localhost:55432/localtrade \
-  npm --prefix backend run migrate
-DATABASE_URL=postgres://localtrade:localtrade@localhost:55432/localtrade \
-  npm --prefix backend run seed
-
-# 3) Run the API integration suite.
-DATABASE_URL=postgres://localtrade:localtrade@localhost:55432/localtrade \
-  npm --prefix backend test -- test/api.test.ts
-
-# 4) Tear the test DB down when finished.
-docker-compose -p localtrade73 down
-```
-
-The `-p localtrade73` project label and `POSTGRES_PORT=55432` keep this test
-database isolated from the default `docker-compose up` stack.
-
-### Shortcut: one command
+### Run every suite
 
 ```bash
 bash run_tests.sh
 ```
 
-Runs backend unit + frontend tests + frontend build in sequence. Optional —
-the individual commands above are authoritative.
+`run_tests.sh` brings up the stack, runs backend unit + API integration,
+frontend unit + build, and end-to-end FE↔BE tests — then tears down.
+
+### Run an individual suite
+
+```bash
+# Backend unit + API integration (DB-backed, real HTTP, no mocks)
+docker-compose --profile test run --rm backend-tests
+
+# Frontend unit tests + production build
+docker-compose --profile test run --rm frontend-tests
+
+# End-to-end: login → core action → round-trip through nginx proxy
+docker-compose --profile test run --rm e2e
+```
+
+What each suite validates:
+
+- **backend-tests** — domain invariants (refund threshold, review window,
+  publish gate, credit metrics), JWT / HMAC / signed URLs, worker retry
+  lifecycle, and every HTTP endpoint via a real bound TCP port (no
+  `app.inject` bypass, no repository/service mocks).
+- **frontend-tests** — Angular components (auth, listings, orders,
+  reviews, moderation, arbitration, admin), core HTTP interceptors,
+  toast service, role-based guards, and the production build.
+- **e2e** — spins through the frontend nginx container to confirm
+  `/api/*` requests are proxied to the backend, exercising a real
+  FE↔BE↔DB round trip (login → list → create listing → verify
+  persistence).
 
 ---
 
@@ -172,47 +152,48 @@ the individual commands above are authoritative.
   processed by the worker.
 - Encrypted files are written to `MEDIA_ROOT_PATH/backups/` with format
   `backup-YYYY-MM-DD-<timestamp>.sql.enc` (AES-256-GCM).
-- Files older than 30 days are auto-pruned.
+- Files older than 30 days are pruned automatically.
 - **RTO:** 4 hours from backup selection to verified API readiness.
 
-### Restore procedure
+### Restore procedure (Docker-contained)
 
-1. Put the API in maintenance mode or stop the API container.
-2. Decrypt the backup with the same `ENCRYPTION_KEY_HEX` that was active at
-   backup time.
-3. Restore into Postgres:
+```bash
+# 1) Stop writes (or stop the api service).
+docker-compose stop api
 
-   ```bash
-   psql "$DATABASE_URL" < decrypted-backup.sql
-   ```
+# 2) Decrypt the backup inside the api container with the ENCRYPTION_KEY_HEX
+#    that was active at backup time, then pipe into the postgres container.
+docker-compose exec -T api sh -c \
+  'node -e "…decrypt script using ENCRYPTION_KEY_HEX…" < /var/localtrade/media/backups/backup-<date>.sql.enc' \
+  | docker-compose exec -T postgres psql -U localtrade -d localtrade
 
-4. Restart the API and verify:
+# 3) Restart the api and verify readiness.
+docker-compose start api
+docker-compose exec api sh -c 'wget -q -O- http://localhost:3000/health/ready'
+# → {"ok":true}
+```
 
-   ```bash
-   curl -s http://localhost:3000/health/ready
-   # → {"ok":true}
-   ```
+Decryption utility is shipped in the api image at
+`/app/dist/scripts/decrypt-backup.js` (or run via `docker-compose exec api`
+with Node directly). Keeping the whole restore flow containerized means
+the same `ENCRYPTION_KEY_HEX` used by the api service is reused — no host
+Node, no host `psql`.
 
 ---
 
-## Environment policy
+## Environment policy (strict)
 
-- **Docker-first.** Normal development and verification happens inside the
-  provided `docker-compose` stack. No manual host-side install of Postgres,
-  Node, or system packages is required.
-- **Optional (non-required):** running `npm install` on the host is only
-  useful if you want to iterate on `backend/` or `frontend/` outside Docker.
-  It is not part of the verification flow.
-- **Secrets policy:** dev defaults are used only when `NODE_ENV` ≠
-  `production`. Production deployments **must** set:
+- **Docker-contained.** Every required path (run, verify, test, restore)
+  runs inside the compose stack. No host-side `npm install`, `node`,
+  `psql`, or other language runtime is used or required.
+- **Production secrets.** In production deployments you **must** set:
   - `NODE_ENV=production`
   - `JWT_SECRET` — ≥ 32 random characters
   - `SIGNED_URL_SECRET` — ≥ 32 random characters
   - `ENCRYPTION_KEY_HEX` — exactly 64 hex characters (32 bytes)
   - `CORS_ALLOWED_ORIGINS` — comma-separated allow-list
-
-  If any of these are left as defaults with `NODE_ENV=production`, the API
-  refuses to start.
+  The api refuses to start with the development defaults while
+  `NODE_ENV=production`.
 
 ---
 
@@ -220,13 +201,12 @@ the individual commands above are authoritative.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `docker-compose up` reports `port is already allocated` on 3000/4200 | another local service holds the port | stop the other service, or remap the host port in `docker-compose.yml` |
-| `role "localtrade" does not exist` when running `api.test.ts` | test DB container not started, or wrong port | run `POSTGRES_PORT=55432 docker-compose -p localtrade73 up -d postgres` first |
-| API logs `pool: cannot connect` on boot | Postgres is still initializing | compose `depends_on: healthy` handles this — if running outside compose, wait until `pg_isready` returns ok |
-| Frontend shows CORS errors | `CORS_ALLOWED_ORIGINS` doesn't include the origin you're hitting | set `CORS_ALLOWED_ORIGINS=http://localhost:4200` (or your LAN IP) and restart the API |
-| Integration tests fail with `relation ... does not exist` | migrations were not re-run after `docker-compose down -v` | re-run `npm --prefix backend run migrate` with the right `DATABASE_URL` |
+| `docker-compose up` reports `port is already allocated` on 3000/4200 | another local service holds the port | stop the other service or remap the host port in `docker-compose.yml` |
+| API logs `pool: cannot connect` on boot | Postgres is still initializing | compose waits for `pg_isready` via the healthcheck; if you bypassed it, re-run `docker-compose up` |
+| Frontend shows CORS errors | `CORS_ALLOWED_ORIGINS` doesn't include the origin you're hitting | set `CORS_ALLOWED_ORIGINS=http://localhost:4200` (or your LAN IP) in compose env and restart the api |
+| Integration tests fail with `relation ... does not exist` | DB volume was wiped between runs | `docker-compose --profile test run --rm backend-tests` — it re-migrates and re-seeds before testing |
 | API refuses to start in production with `INSECURE_DEFAULT_SECRETS` | default dev secrets still in effect | set all variables listed under **Environment policy** |
-| `api.test.ts` occasionally hangs during finalize | worker scheduler is asynchronously processing the job | tests poll for the `ready` state with a timeout; no action needed |
+| `e2e` fails with `Timed out waiting for …` | frontend or api not yet healthy when e2e started | run `docker-compose up -d` first, wait a few seconds, then `docker-compose --profile test run --rm e2e` |
 
 ---
 
@@ -234,4 +214,5 @@ the individual commands above are authoritative.
 
 - API reference (OpenAPI): http://localhost:3000/docs
 - Business-logic questions log: [`docs/questions.md`](docs/questions.md)
-- Source layout: `backend/` (Fastify + TypeScript), `frontend/` (Angular).
+- Source layout: `backend/` (Fastify + TypeScript), `frontend/` (Angular),
+  `e2e/` (vitest + real-proxy round-trip suite).

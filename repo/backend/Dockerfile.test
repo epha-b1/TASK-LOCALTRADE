@@ -1,7 +1,7 @@
 FROM node:20-alpine
 WORKDIR /app
 RUN apk add --no-cache ffmpeg postgresql-client
-COPY package.json package-lock.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json vitest.config.ts ./
 RUN npm config set fetch-retries 5 \
  && npm config set fetch-retry-mintimeout 20000 \
  && npm config set fetch-retry-maxtimeout 120000 \
@@ -10,6 +10,5 @@ RUN npm config set fetch-retries 5 \
      || npm install --no-audit --no-fund --loglevel=error)
 COPY migrations ./migrations
 COPY src ./src
-RUN npm run build
-EXPOSE 3000
-CMD ["npm", "run", "start"]
+COPY test ./test
+CMD ["sh", "-c", "npm run migrate && npm run seed && npm test"]

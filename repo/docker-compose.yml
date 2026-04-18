@@ -30,21 +30,68 @@ services:
       NONCE_WINDOW_SEC: 300
       CORS_ALLOWED_ORIGINS: http://localhost:4200
     ports:
-      - "3000:3000"
+      - "${API_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - media_data:/var/localtrade/media
       - chunk_data:/var/localtrade/chunks
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
 
   frontend:
     build:
       context: ./frontend
     ports:
-      - "4200:80"
+      - "${FRONTEND_PORT:-4200}:80"
     depends_on:
       - api
+
+  # --- Test-runner services (profile: test) -----------------------------------
+  # All developer verification is containerized. Bring the stack up, then run
+  # tests via `docker compose --profile test run --rm <service>`.
+
+  backend-tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    environment:
+      DATABASE_URL: postgres://localtrade:localtrade@postgres:5432/localtrade
+      JWT_SECRET: localtrade-dev-jwt-secret
+      SIGNED_URL_SECRET: localtrade-dev-signed-url-secret
+      ENCRYPTION_KEY_HEX: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      MEDIA_ROOT_PATH: /tmp/localtrade-media
+      CHUNK_ROOT_PATH: /tmp/localtrade-chunks
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "npm run migrate && npm run seed && npm test"]
+
+  frontend-tests:
+    profiles: ["test"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.test
+    command: ["sh", "-c", "npm test -- --watch=false && npm run build"]
+
+  e2e:
+    profiles: ["test"]
+    build:
+      context: ./e2e
+    environment:
+      FRONTEND_ORIGIN: http://frontend:80
+      API_ORIGIN: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
 
 volumes:
   pg_data:
