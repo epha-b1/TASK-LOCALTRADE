@@ -9,7 +9,9 @@
 
 set -euo pipefail
 
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-localtrade}"
+# Project name `localtrade73` isolates this stack from any other Docker project
+# on the host (matches the convention referenced in the audit reports).
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-localtrade73}"
 POSTGRES_PORT="${POSTGRES_PORT:-55432}"
 API_PORT="${API_PORT:-33000}"
 FRONTEND_PORT="${FRONTEND_PORT:-44200}"

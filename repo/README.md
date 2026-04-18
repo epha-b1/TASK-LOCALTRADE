@@ -22,6 +22,23 @@ docker-compose up -d        # run in background
 docker-compose down         # stop and remove containers
 ```
 
+### Isolated project profile (recommended on shared hosts)
+
+Use the `localtrade73` project label and the dedicated host ports so this
+stack never collides with any other Docker project running on the same
+machine:
+
+```bash
+POSTGRES_PORT=55432 API_PORT=33000 FRONTEND_PORT=44200 \
+  docker-compose -p localtrade73 up -d postgres
+
+# Same profile for the full stack:
+POSTGRES_PORT=55432 API_PORT=33000 FRONTEND_PORT=44200 \
+  docker-compose -p localtrade73 up -d
+```
+
+`bash run_tests.sh` uses exactly this profile by default.
+
 ---
 
 ## Access
@@ -213,6 +230,6 @@ Node, no host `psql`.
 ## Reference
 
 - API reference (OpenAPI): http://localhost:3000/docs
-- Business-logic questions log: [`docs/questions.md`](docs/questions.md)
+- Business-logic questions log: [`docs/business-logic-questions-log.md`](docs/business-logic-questions-log.md) (also available as [`docs/questions.md`](docs/questions.md) for backwards-compat)
 - Source layout: `backend/` (Fastify + TypeScript), `frontend/` (Angular),
   `e2e/` (vitest + real-proxy round-trip suite).

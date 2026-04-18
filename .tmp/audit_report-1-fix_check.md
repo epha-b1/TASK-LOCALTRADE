@@ -323,3 +323,26 @@ Task 73 now meets the acceptance bar with a complete, reproducible verification 
 - Repository code changes in this follow-up: none
 - Working tree check during follow-up showed no edits under `repo/` for this cycle.
 - Conclusion: acceptance remains **Pass**, and the previously reported failing review-image upload test is currently reproducible as **passing** in both targeted and full-suite runs.
+
+---
+
+## L. Explicit closure map for the six prioritized issues from `audit_report-1.md`
+
+Earlier sections reported themes (frontend flakiness, Docker cross-project
+interference, verification pipeline). Reviewers asked for a direct item-by-item
+mapping back to the six prioritized issues in section "Prioritized Issues" of
+`audit_report-1.md`. That mapping is below.
+
+| # | Original priority + title | Status | Evidence |
+|---|---|---|---|
+| 1 | **[High] Asset postprocess queue is not truly decoupled async** | **FIXED** | `repo/backend/src/jobs/worker.ts:204` exports `startAssetPostprocessScheduler()`; a dedicated interval runs `processAssetPostprocessJobs` off-request, and `repo/backend/src/services/media-service.ts:146` signals the worker via `signalAssetWorker()` instead of running inline. Covered by `repo/backend/test/worker.test.ts:175` ("asset postprocess retry lifecycle") and the finalize→ready round-trip in `repo/backend/test/api.test.ts` (e.g. "finalize upload returns 202 and worker completes asynchronously"). |
+| 2 | **[High] Stale-job watchdog recovery is not periodic (only startup call)** | **FIXED** | `repo/backend/src/jobs/worker.ts:214` exports `startStaleRecoveryScheduler()` with a 5-minute interval; `repo/backend/src/server.ts:122` wires it up on boot. Covered by `repo/backend/test/worker.test.ts:156` ("stale-job recovery scheduler runs immediately and every 5 minutes"). |
+| 3 | **[High] Store-credit capture has concurrency/race risk and no reserve stage** | **FIXED** | `repo/backend/src/services/payment-service.ts` performs a `SELECT ... FOR UPDATE` on the buyer row inside `withTx` before computing the balance, and the ledger insert happens in the same transaction, giving pessimistic-lock reserve semantics. Covered by the parallel-request regression test `store credit capture is safe under parallel requests` in `repo/backend/test/api.test.ts`. |
+| 4 | **[Medium] API documentation endpoint exposed without authentication** | **FIXED** | `repo/backend/src/config.ts:31` introduces `docsEnabled` which defaults to `false` when `NODE_ENV=production`. `repo/backend/src/server.ts:79-83` gates Swagger UI behind that flag. Covered by `repo/backend/test/api.test.ts` test `docs route can be disabled by configuration`. |
+| 5 | **[Medium] Review image attach path does not require `asset.status = ready`** | **FIXED** | `repo/backend/src/services/review-service.ts` calls `assertReviewImageAssetReady(asset)` (see helper in the same file) which rejects anything not `ready` with `ASSET_NOT_READY`. Covered by `repo/backend/test/api.test.ts` test `review image attach rejects assets that are not ready`. |
+| 6 | **[Low] Orders status filter omits `refunded`** | **FIXED** | `repo/backend/src/routes/orders.ts` schema accepts `placed | payment_captured | completed | cancelled | refunded`, and `repo/backend/src/services/order-service.ts` listing queries forward the filter unchanged. Covered by `repo/backend/test/api.test.ts` test `order state machine transitions are validated end-to-end across terminal paths` (the terminal `refunded` row is asserted on the filtered list). |
+
+Summary: 6 of 6 prioritized issues are now FIXED and each is covered by an
+automated test. The themes in earlier sections of this fix-check document are
+cross-cutting concerns that surfaced during re-verification, not replacements
+for the per-issue mapping above.
