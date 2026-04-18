@@ -29,16 +29,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "===> Starting stack (postgres + api + frontend) on ports pg=$POSTGRES_PORT api=$API_PORT fe=$FRONTEND_PORT..."
-"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" up -d postgres api frontend
-
-echo
-echo "===> Backend unit + API integration tests (Docker)..."
+echo "===> Backend unit + API integration tests (Docker, postgres only)..."
+# Bring up ONLY postgres: the backend-tests container starts its own
+# in-process Fastify server. Running the api container in parallel would
+# cause its worker scheduler to race with the test's in-process worker
+# over the shared jobs table.
+"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" up -d postgres
 "${DC[@]}" -p "$COMPOSE_PROJECT_NAME" --profile test run --rm backend-tests
 
 echo
 echo "===> Frontend unit tests + production build (Docker)..."
 "${DC[@]}" -p "$COMPOSE_PROJECT_NAME" --profile test run --rm frontend-tests
+
+echo
+echo "===> Starting full stack (postgres + api + frontend) for E2E..."
+"${DC[@]}" -p "$COMPOSE_PROJECT_NAME" up -d postgres api frontend
 
 echo
 echo "===> FE↔BE E2E (Docker, real proxy round-trip)..."

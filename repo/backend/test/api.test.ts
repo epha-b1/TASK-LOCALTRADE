@@ -5,6 +5,7 @@ import { buildServer } from "../src/server.js";
 import { config } from "../src/config.js";
 import { pool } from "../src/db/pool.js";
 import { decryptText } from "../src/security/encryption.js";
+import { signalAssetWorker } from "../src/jobs/worker.js";
 import { closeDb, resetDb } from "./test-db.js";
 
 const app = buildServer();
@@ -55,6 +56,42 @@ function normalizeHeaders(input: Record<string, string | number | string[] | und
   return out;
 }
 
+// Regex matching `/api/listings/<uuid>/publish` — a publish call that relies
+// on every asset on the listing already being `ready`. Under container
+// scheduling the async worker may not have reached all assets yet, so the
+// wrapper automatically waits (up to ~6s) before forwarding the request.
+const PUBLISH_URL_RE = /^\/api\/listings\/([0-9a-f-]{36})\/publish$/i;
+
+async function waitListingAssetsReady(listingId: string, maxAttempts = 120) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const rows = await pool.query(
+      "SELECT id, status FROM assets WHERE listing_id = $1",
+      [listingId],
+    );
+    if (!rows.rowCount) return true; // no-assets negative path
+    if (rows.rows.every((r: { status: string }) => r.status === "ready")) return true;
+
+    // If none of the non-ready assets have a pending/processing worker job,
+    // nobody is going to move them to `ready`. Proceed immediately so
+    // negative-case tests that set status=processing/failed via SQL stay fast.
+    const assetIds = rows.rows.map((r: { id: string }) => r.id);
+    const pending = await pool.query(
+      `SELECT 1 FROM jobs
+       WHERE type = 'asset_postprocess'
+         AND status IN ('queued','processing')
+         AND (payload_json->>'assetId') = ANY($1::text[])
+       LIMIT 1`,
+      [assetIds],
+    );
+    if (!pending.rowCount) return false;
+    // Re-kick the in-process worker: finalize's fire-and-forget signal can be
+    // dropped by the `assetWorkerRunning` guard under concurrent uploads.
+    signalAssetWorker();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
 async function realHttpInject(opts: InjectOpts | string): Promise<InjectResult> {
   if (typeof opts === "string") {
     opts = { method: "GET", url: opts } as InjectOpts;
@@ -69,6 +106,19 @@ async function realHttpInject(opts: InjectOpts | string): Promise<InjectResult> 
   const hasTimestamp = Object.keys(headers).some((key) => key.toLowerCase() === "x-request-timestamp");
   if (hasAuth && (!hasNonce || !hasTimestamp)) {
     Object.assign(headers, replayHeaders("auto"));
+  }
+
+  // Auto-wait for asset postprocessing before a publish call so test flows
+  // that go "upload session -> finalize -> publish" are deterministic under
+  // container scheduling. Negative-case publish tests (flagged, no-assets,
+  // not-ready) are unaffected: waitListingAssetsReady returns truthy when
+  // either every asset is ready OR the listing has no assets.
+  if (method === "POST") {
+    const pathOnly = rawUrlOrPath.split("?")[0] as string;
+    const m = PUBLISH_URL_RE.exec(pathOnly);
+    if (m) {
+      await waitListingAssetsReady(m[1]);
+    }
   }
 
   let body: BodyInit | undefined;
@@ -119,7 +169,12 @@ async function waitForAssetReady(assetId: string, maxAttempts = 120) {
   for (let i = 0; i < maxAttempts && status !== "ready"; i += 1) {
     const row = await pool.query("SELECT status FROM assets WHERE id = $1", [assetId]);
     status = String(row.rows[0]?.status ?? "processing");
-    if (status !== "ready") await new Promise((resolve) => setTimeout(resolve, 50));
+    if (status !== "ready") {
+      // Re-kick the single-shot worker in case the previous signal was
+      // dropped by the `assetWorkerRunning` guard during concurrent uploads.
+      signalAssetWorker();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   }
   return status;
 }
@@ -949,9 +1004,12 @@ describe("api integration with postgres", () => {
     const listingAId = listingA.json().id as string;
     const sessionA = await app.inject({ method: "POST", url: "/api/media/upload-sessions", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rci-sa") }, payload: { listingId: listingAId, fileName: "a.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 } });
     const sidA = sessionA.json().sessionId as string;
+    const rciAssetAId = sessionA.json().assetId as string;
     await app.inject({ method: "PUT", url: `/api/media/upload-sessions/${sidA}/chunks/0`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rci-ca"), "content-type": "application/octet-stream" }, payload: Buffer.from("abc") });
     await app.inject({ method: "POST", url: `/api/media/upload-sessions/${sidA}/finalize`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rci-fa") }, payload: {} });
-    await app.inject({ method: "POST", url: `/api/listings/${listingAId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rci-pa") } });
+    expect(await waitForAssetReady(rciAssetAId)).toBe("ready");
+    const publishRciA = await app.inject({ method: "POST", url: `/api/listings/${listingAId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rci-pa") } });
+    expect(publishRciA.statusCode).toBe(200);
 
     const listingB = await app.inject({ method: "POST", url: "/api/listings", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("rci-lb") }, payload: { title: "B", description: "d", priceCents: 2000, quantity: 2 } });
     const listingBId = listingB.json().id as string;
@@ -2302,10 +2360,14 @@ describe("api integration with postgres", () => {
     const listingId = listing.json().id as string;
     const session = await app.inject({ method: "POST", url: "/api/media/upload-sessions", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("iso-s") }, payload: { listingId, fileName: "x.jpg", sizeBytes: 10, extension: "jpg", mimeType: "image/jpeg", totalChunks: 1, chunkSizeBytes: 5 * 1024 * 1024 } });
     const sid = session.json().sessionId as string;
+    const isoAssetId = session.json().assetId as string;
     await app.inject({ method: "PUT", url: `/api/media/upload-sessions/${sid}/chunks/0`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("iso-c"), "content-type": "application/octet-stream" }, payload: Buffer.from("abc") });
     await app.inject({ method: "POST", url: `/api/media/upload-sessions/${sid}/finalize`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("iso-f") }, payload: { detectedMime: "image/jpeg" } });
-    await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("iso-p") } });
+    expect(await waitForAssetReady(isoAssetId)).toBe("ready");
+    const publishIso = await app.inject({ method: "POST", url: `/api/listings/${listingId}/publish`, headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("iso-p") } });
+    expect(publishIso.statusCode).toBe(200);
     const order = await app.inject({ method: "POST", url: "/api/orders", headers: { authorization: `Bearer ${buyerAToken}`, ...replayHeaders("iso-o") }, payload: { listingId, quantity: 1 } });
+    expect(order.statusCode).toBe(201);
     const orderId = order.json().id as string;
     const payment = await app.inject({ method: "POST", url: "/api/payments/capture", headers: { authorization: `Bearer ${sellerToken}`, ...replayHeaders("iso-pay") }, payload: { orderId, tenderType: "cash", amountCents: 1000, transactionKey: "tx-iso-1" } });
     const paymentId = payment.json().paymentId as string;
@@ -2933,12 +2995,16 @@ describe("api integration with postgres", () => {
     const forbidden = await app.inject({ method: "GET", url: "/api/admin/jobs", headers: { authorization: `Bearer ${sellerToken}` } });
     expect(forbidden.statusCode).toBe(403);
 
+    // Use a synthetic job type the in-process worker does not claim, so
+    // this test exercises ONLY the admin jobs list + retry endpoints and
+    // is not racing the asset-postprocess worker ticks that other tests
+    // may have fired.
     const failedInsert = await pool.query(
-      "INSERT INTO jobs(type, payload_json, status, retry_count, last_error) VALUES('asset_postprocess', '{}', 'failed', 3, 'forced failure') RETURNING id",
+      "INSERT INTO jobs(type, payload_json, status, retry_count, last_error) VALUES('admin_jobs_test', '{}', 'failed', 3, 'forced failure') RETURNING id",
     );
     const failedId = failedInsert.rows[0].id as string;
     const queuedInsert = await pool.query(
-      "INSERT INTO jobs(type, payload_json, status, retry_count) VALUES('asset_postprocess', '{}', 'queued', 0) RETURNING id",
+      "INSERT INTO jobs(type, payload_json, status, retry_count) VALUES('admin_jobs_test', '{}', 'queued', 0) RETURNING id",
     );
     const queuedId = queuedInsert.rows[0].id as string;
 
