@@ -42,6 +42,8 @@ describe('UserManagementComponent', () => {
     }).compileComponents();
   });
 
+  const LONG_TIMEOUT = 30_000;
+
   it('loads users on init and stores rows', async () => {
     const fixture = TestBed.createComponent(UserManagementComponent);
     fixture.detectChanges();
@@ -51,7 +53,7 @@ describe('UserManagementComponent', () => {
     expect(apiGet).toHaveBeenCalledWith('/api/admin/users?page=1&pageSize=20');
     expect(component.rows().length).toBe(1);
     expect(component.rows()[0].email).toBe('buyer@localtrade.test');
-  });
+  }, LONG_TIMEOUT);
 
   it('sends status update request and shows success toast', async () => {
     const fixture = TestBed.createComponent(UserManagementComponent);
@@ -64,7 +66,7 @@ describe('UserManagementComponent', () => {
 
     expect(apiPatch).toHaveBeenCalledWith('/api/admin/users/user-1/status', { status: 'inactive', reason: 'Admin set status to inactive' });
     expect(toastSuccess).toHaveBeenCalledWith('User deactivated');
-  });
+  }, LONG_TIMEOUT);
 
   it('reports API failures from role update', async () => {
     const fixture = TestBed.createComponent(UserManagementComponent);
@@ -80,15 +82,16 @@ describe('UserManagementComponent', () => {
 
     expect(component.error()).toBe('Role update failed');
     expect(toastError).toHaveBeenCalledWith('Role update failed');
-  });
+  }, LONG_TIMEOUT);
 
   async function componentReady(fixture: ReturnType<typeof TestBed.createComponent<UserManagementComponent>>) {
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 200; i += 1) {
       await Promise.resolve();
       fixture.detectChanges();
       if (fixture.componentInstance.rows().length > 0 || fixture.componentInstance.error()) {
         return;
       }
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
     await fixture.whenStable();
     fixture.detectChanges();

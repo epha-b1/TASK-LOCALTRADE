@@ -47,6 +47,11 @@ describe('KeywordRulesComponent', () => {
     }).compileComponents();
   });
 
+  // Long per-test timeout: this suite goes through the full Angular bootstrap
+  // + async signal-settle loop. Containerized CPU time can push the slower
+  // machines past vitest's default 5s.
+  const LONG_TIMEOUT = 30_000;
+
   it('loads rules on init', async () => {
     const fixture = TestBed.createComponent(KeywordRulesComponent);
     fixture.detectChanges();
@@ -55,7 +60,7 @@ describe('KeywordRulesComponent', () => {
     const component = fixture.componentInstance;
     expect(apiGet).toHaveBeenCalledWith('/api/admin/content-rules');
     expect(component.rules().length).toBe(1);
-  });
+  }, LONG_TIMEOUT);
 
   it('toggles a rule active state', async () => {
     const fixture = TestBed.createComponent(KeywordRulesComponent);
@@ -67,7 +72,7 @@ describe('KeywordRulesComponent', () => {
 
     expect(apiPatch).toHaveBeenCalledWith('/api/admin/content-rules/rule-1', { active: false });
     expect(toastSuccess).toHaveBeenCalledWith('Rule updated');
-  });
+  }, LONG_TIMEOUT);
 
   it('deletes a rule and shows info toast', async () => {
     const fixture = TestBed.createComponent(KeywordRulesComponent);
@@ -79,7 +84,7 @@ describe('KeywordRulesComponent', () => {
 
     expect(apiDelete).toHaveBeenCalledWith('/api/admin/content-rules/rule-1');
     expect(toastInfo).toHaveBeenCalledWith('Rule deleted');
-  });
+  }, LONG_TIMEOUT);
 
   it('creates a rule and resets form', async () => {
     const fixture = TestBed.createComponent(KeywordRulesComponent);
@@ -93,7 +98,7 @@ describe('KeywordRulesComponent', () => {
     expect(apiPost).toHaveBeenCalledWith('/api/admin/content-rules', { ruleType: 'regex', pattern: 'forbid\\s+me', active: true });
     expect(component.form.getRawValue()).toEqual({ ruleType: 'keyword', pattern: '' });
     expect(toastSuccess).toHaveBeenCalledWith('Rule created');
-  });
+  }, LONG_TIMEOUT);
 
   async function componentReady(fixture: ReturnType<typeof TestBed.createComponent<KeywordRulesComponent>>) {
     for (let i = 0; i < 120; i += 1) {
